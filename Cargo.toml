@@ -1,0 +1,4 @@
+[dependencies]
+rodio = "0.14"
+hound = "3.4"
+plotters = "0.3"
