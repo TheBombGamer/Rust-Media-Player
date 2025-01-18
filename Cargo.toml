@@ -2,3 +2,5 @@
 rodio = "0.14"
 hound = "3.4"
 plotters = "0.3"
+gtk = { version = "0.9", features = ["v3_10"] }
+dasp = "0.11"
