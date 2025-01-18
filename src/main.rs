@@ -3,20 +3,79 @@ use std::fs::File;
 use std::io::{BufReader, Result};
 use plotters::prelude::*;
 use std::path::Path;
+use gtk::prelude::*;
+use gtk::{Button, Scale, Box as GtkBox, Window, WindowType};
+use std::sync::{Arc, Mutex};
+
+struct Equalizer {
+    gains: Vec<f32>,
+}
+
+impl Equalizer {
+    fn new(band_count: usize) -> Self {
+        Self {
+            gains: vec![1.0; band_count],
+        }
+    }
+
+    fn apply(&self, samples: &mut [i16]) {
+        for (i, sample) in samples.iter_mut().enumerate() {
+            let band = (i % self.gains.len()) as f32;
+            *sample = (*sample as f32 * self.gains[band as usize]) as i16;
+        }
+    }
+}
 
 fn main() -> Result<()> {
-    let (_stream, stream_handle) = OutputStream::try_default()?;
-    let sink = Sink::try_new(&stream_handle)?;
+    let application = gtk::Application::new(Some("com.example.media_player"), Default::default());
+    application.connect_activate(|app| {
+        let window = Window::new(WindowType::Toplevel);
+        window.set_title("Media Player with Equalizer");
+        window.set_default_size(800, 600);
+        
+        let vbox = GtkBox::new(gtk::Orientation::Vertical, 5);
+        window.add(&vbox);
 
-    let file_path = get_audio_file()?;
-    visualize_audio(&file_path)?;
+        let equalizer = Arc::new(Mutex::new(Equalizer::new(5)));
 
-    let file = File::open(&file_path)?;
-    let source = Decoder::new(BufReader::new(file))?;
-    sink.append(source);
-    println!("Playing audio...");
-    sink.sleep_until_end();
+        for i in 0..5 {
+            let equalizer_clone = Arc::clone(&equalizer);
+            let scale = Scale::new(gtk::Orientation::Horizontal, None);
+            scale.set_range(0.0, 2.0);
+            scale.set_value(1.0);
+            scale.set_inverted(true);
+            scale.connect_value_changed(move |s| {
+                let mut eq = equalizer_clone.lock().unwrap();
+                eq.gains[i] = s.get_value() as f32;
+            });
+            vbox.pack_start(&scale, false, false, 0);
+        }
 
+        let play_button = Button::with_label("Play");
+        vbox.pack_start(&play_button, false, false, 0);
+        
+        play_button.connect_clicked(move |_| {
+            let file_path = get_audio_file().unwrap();
+            let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+            let sink = Sink::try_new(&stream_handle).unwrap();
+
+            let file = File::open(&file_path).unwrap();
+            let source = Decoder::new(BufReader::new(file)).unwrap();
+            let mut samples: Vec<i16> = source.collect::<Result<Vec<i16>, _>>().unwrap();
+
+            {
+                let eq = equalizer.lock().unwrap();
+                eq.apply(&mut samples);
+            }
+
+            sink.append(rodio::buffer::SamplesBuffer::new(1, 44100, samples));
+            sink.sleep_until_end();
+        });
+
+        window.show_all();
+    });
+
+    application.run();
     Ok(())
 }
 
@@ -30,34 +89,4 @@ fn get_audio_file() -> Result<String> {
     } else {
         Err(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found"))
     }
-}
-
-fn visualize_audio(file_path: &str) -> Result<()> {
-    let mut reader = hound::WavReader::open(file_path)?;
-    let samples: Vec<i16> = reader.samples::<i16>().filter_map(Result::ok).collect();
-
-    let root = BitMapBackend::new("waveform.png", (800, 400)).into_drawing_area();
-    root.fill(&WHITE)?;
-
-    let mut chart = ChartBuilder::on(&root)
-        .caption("Waveform", ("sans-serif", 50).into_font())
-        .margin(5)
-        .x_label_area_size(30)
-        .y_label_area_size(30)
-        .build_cartesian_2d(0..samples.len(), i16::MIN..i16::MAX)?;
-
-    chart
-        .configure_mesh()
-        .x_desc("Sample Index")
-        .y_desc("Amplitude")
-        .draw()?;
-
-    chart.draw_series(LineSeries::new(
-        samples.iter().enumerate().map(|(x, y)| (x, *y)),
-        &RED,
-    ))?;
-
-    root.present()?;
-    println!("Waveform saved to waveform.png");
-    Ok(())
 }
